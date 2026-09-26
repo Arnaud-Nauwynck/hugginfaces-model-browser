@@ -1,0 +1,57 @@
+<nav class="navbar navbar-expand-lg bg-body-tertiary">
+  <div class="container-fluid">
+    <a class="navbar-brand" href="#">HugginFace Models</a>
+    <button
+      class="navbar-toggler"
+      type="button"
+      (click)="isNavbarCollapsed = !isNavbarCollapsed"
+      [attr.aria-expanded]="!isNavbarCollapsed"
+      aria-controls="navbarSupportedContent"
+      aria-label="Toggle navigation"
+    >
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="navbarSupportedContent" [ngbCollapse]="isNavbarCollapsed">
+      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+        <li class="nav-item">
+          <a class="nav-link active" aria-current="page" href="#">Home</a>
+        </li>
+
+        <li class="nav-item">
+          <a class="nav-link" routerLink="/llm-models" ngbDropdownItem>LLM-Models</a>
+        </li>
+
+
+        <li class="nav-item" ngbDropdown>
+          <a class="nav-link dropdown-toggle" href="#" role="button" ngbDropdownToggle>
+            Statistics
+          </a>
+          <ul class="dropdown-menu" ngbDropdownMenu>
+<!--
+            <li><a class="dropdown-item" routerLink="/user-issue-stats" ngbDropdownItem>User Stats</a></li>
+-->
+            <li><hr class="dropdown-divider"></li>
+          </ul>
+        </li>
+
+        <li class="nav-item" ngbDropdown>
+          <a class="nav-link dropdown-toggle" href="#" role="button" ngbDropdownToggle>
+            Help
+          </a>
+          <ul class="dropdown-menu" ngbDropdownMenu>
+<!--
+            <li><a class="dropdown-item" routerLink="/sources-sync" ngbDropdownItem>Sources Sync</a></li>
+-->
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" routerLink="/about" ngbDropdownItem>About</a></li>
+          </ul>
+        </li>
+
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid">
+  <router-outlet />
+</div>
