@@ -1,0 +1,63 @@
+{
+  "_id": "6aacc6b34a8e10ba66ac6d0f",
+  "id": "convaiinnovations/laya",
+  "private": false,
+  "pipeline_tag": "text-classification",
+  "library_name": "transformers",
+  "tags": [
+    "transformers",
+    "safetensors"
+  ],
+  "downloads": 0,
+  "likes": 3869,
+  "modelId": "convaiinnovations/laya",
+  "author": "convaiinnovations",
+  "sha": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+  "lastModified": "2026-09-24T05:39:22.000Z",
+  "gated": false,
+  "disabled": false,
+  "widgetData": [
+    {
+      "text": "I like you. I love you"
+    }
+  ],
+  "model-index": null,
+  "config": {},
+  "cardData": {
+    "license": "apache-2.0",
+    "library_name": "transformers",
+    "pipeline_tag": "text-classification",
+    "tags": [
+      "laya",
+      "system-one"
+    ]
+  },
+  "transformersInfo": {
+    "auto_model": "AutoModel"
+  },
+  "siblings": [
+    {
+      "rfilename": "assets/laya_benchmark.png",
+      "blobId": "b514d800b01bdc9eeb5df4fa37294fd63262ca64",
+      "size": 260892,
+      "lfs": {
+        "sha256": "e01e49f0d842b4616e44c4c9a0feb92a9ae45efeb533f8f838888715dc89c2b9",
+        "size": 260892,
+        "pointerSize": 131
+      }
+    }
+  ],
+  "spaces": [
+    "multimodalart/jev-decision-index",
+    "convaiinnovations/laya-demo"
+  ],
+  "createdAt": "2026-09-18T05:05:55.000Z",
+  "safetensors": {
+    "parameters": {
+      "F32": 3,
+      "F16": 421293827
+    },
+    "total": 421293830
+  },
+  "usedStorage": 2366100536
+}

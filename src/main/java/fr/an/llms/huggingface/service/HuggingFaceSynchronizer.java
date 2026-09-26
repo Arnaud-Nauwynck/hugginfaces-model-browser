@@ -1,9 +1,11 @@
 package fr.an.llms.huggingface.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import fr.an.llms.configuration.HuggingFaceProperties;
 import fr.an.llms.huggingface.client.HuggingFaceApiClient;
-import fr.an.llms.huggingface.client.dto.HFModelsPageDTO;
+import fr.an.llms.huggingface.client.dto.HFDatedModelDTO;
+import fr.an.llms.huggingface.client.dto.HFDatedModelsPageDTO;
+import fr.an.llms.huggingface.client.dto.SourceHFModelDTO;
+import fr.an.llms.rest.dtos.HFModelDTO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -11,6 +13,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -69,15 +72,15 @@ public class HuggingFaceSynchronizer {
 
         String url = state.fullScanNextUrl != null
                 ? state.fullScanNextUrl
-                : huggingFaceClient.baseApiModelsUrl + "?limit=1000&full=true";
+                : huggingFaceClient.baseApiModelsUrl + "?limit=1000&expand=createdAt&expand=lastModified"; // &full=true"
 
         log.info("[full] starting/resuming at: " + url);
         ExecutorService pool = Executors.newFixedThreadPool(concurrency);
 
         try {
             while (url != null) {
-                HFModelsPageDTO page = huggingFaceClient.fetchPage(url);
-                processPageConcurrently(page.items, pool);
+                HFDatedModelsPageDTO page = huggingFaceClient.fetchDatedModelsPage(url);
+                fetchAndStore(page.items, pool);
 
                 // Cursor advanced only after the WHOLE page has been processed successfully
                 state.fullScanNextUrl = page.nextUrl;
@@ -87,8 +90,7 @@ public class HuggingFaceSynchronizer {
                 state.save(statePath);
                 store.saveIndex(); // same checkpoint granularity as the state: after each successful page
 
-                log.info("[full] page processed, total=" + processed.get()
-                        + " errors=" + errors.get() + " next=" + (page.nextUrl != null));
+                log.info("[full] page processed, total=" + processed.get() + " errors=" + errors.get() + " next=" + (page.nextUrl != null));
                 url = page.nextUrl;
             }
         } finally {
@@ -100,7 +102,7 @@ public class HuggingFaceSynchronizer {
         if (state.fullScanComplete) {
             state.lastSyncThreshold = Instant.now().toString();
             state.save(statePath);
-            store.compactAll(); // the full scan may have rewritten already-present ids -> purge duplicates
+            store.compactAll();
         }
 
         log.info("[full] done. total=" + processed.get()
@@ -132,11 +134,11 @@ public class HuggingFaceSynchronizer {
 
         try {
             while (url != null && !reachedThreshold) {
-                HFModelsPageDTO page = huggingFaceClient.fetchPage(url);
+                HFDatedModelsPageDTO page = huggingFaceClient.fetchDatedModelsPage(url);
 
-                List<String> toFetch = new ArrayList<>();
-                for (JsonNode m : page.items) {
-                    String lastModifiedStr = m.path("lastModified").asText(null);
+                List<HFDatedModelDTO> toFetch = new ArrayList<>();
+                for (HFDatedModelDTO m : page.items) {
+                    String lastModifiedStr = m.lastModified;
                     if (lastModifiedStr == null) continue;
 
                     Instant lastModified = safeParseInstant(lastModifiedStr);
@@ -150,10 +152,10 @@ public class HuggingFaceSynchronizer {
                     if (lastModified.isAfter(newestSeen)) {
                         newestSeen = lastModified;
                     }
-                    toFetch.add(m.path("id").asText());
+                    toFetch.add(m);
                 }
 
-                fetchAndStoreConcurrently(toFetch, pool);
+                fetchAndStore(toFetch, pool);
 
                 state.incrementalNextUrl = reachedThreshold ? null : page.nextUrl;
                 state.newestSeenThisRun = newestSeen.toString();
@@ -192,29 +194,36 @@ public class HuggingFaceSynchronizer {
 
     // ================= SHARED FETCH =================
 
-    private void processPageConcurrently(JsonNode items, ExecutorService pool) throws InterruptedException {
-        List<String> ids = new ArrayList<>();
-        for (JsonNode m : items) ids.add(m.path("id").asText());
-        fetchAndStoreConcurrently(ids, pool);
-    }
-
-    private void fetchAndStoreConcurrently(List<String> ids, ExecutorService pool) throws InterruptedException {
+    private void fetchAndStore(List<HFDatedModelDTO> datedModels, ExecutorService pool) throws InterruptedException {
         List<Future<?>> futures = new ArrayList<>();
-        for (String repoId : ids) {
+        for (HFDatedModelDTO datedModel : datedModels) {
+            HFModelDTO prev = store.findById(datedModel.id);
+            if (prev != null && prev.equals(datedModel.lastModified)) {
+                processed.incrementAndGet();
+                continue;
+            }
             futures.add(pool.submit(() -> {
                 try {
-                    Thread.sleep(delayMsPerRequest); // per-worker throttle
-                    String json = huggingFaceClient.fetchModelInfo(repoId);
-                    if (json == null) {
-                        store.delete(repoId); // 404 -> deleted/renamed on the hub side (tombstone, purged at next compaction)
-                        log.error("[warn] " + repoId + ": not found, removed from local store");
+                    // per-worker throttle
+                    Thread.sleep(delayMsPerRequest);
+                    long fetchMillis = Instant.now().toEpochMilli();
+
+                    SourceHFModelDTO sourceModel = huggingFaceClient.fetchModelInfo(datedModel.id);
+                    if (sourceModel == null) {
+                        store.delete(datedModel.id); // 404 -> deleted/renamed on the hub side (tombstone, purged at next compaction)
+                        log.error("[warn] " + datedModel + ": not found, removed from local store");
                     } else {
-                        store.write(repoId, json);
+                        Map<String,Object> extraData = null;
+                        if (prev != null) {
+                            extraData = prev.extra;
+                        }
+                        HFModelDTO hfModelDTO = convertEnrich(sourceModel, fetchMillis, extraData);
+                        store.save(hfModelDTO);
                     }
                     processed.incrementAndGet();
                 } catch (Exception e) {
                     errors.incrementAndGet();
-                    log.error("[error] " + repoId + ": " + e);
+                    log.error("[error] " + datedModel + ": " + e);
                 }
             }));
         }
@@ -225,6 +234,12 @@ public class HuggingFaceSynchronizer {
                 errors.incrementAndGet();
             }
         }
+    }
+
+    protected static HFModelDTO convertEnrich(
+            SourceHFModelDTO huggingFaceInfo, long fetchTimestampMs,
+            Map<String,Object> extra) {
+        return new HFModelDTO(huggingFaceInfo.id, fetchTimestampMs, huggingFaceInfo, extra);
     }
 
 }

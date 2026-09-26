@@ -2,11 +2,13 @@ package fr.an.llms.huggingface.client.dto;
 
 import com.fasterxml.jackson.databind.JsonNode;
 
-public class HFModelsPageDTO {
-    public JsonNode items;
+import java.util.List;
+
+public class HFDatedModelsPageDTO {
+    public List<HFDatedModelDTO> items;
     public String nextUrl;
 
-    public HFModelsPageDTO(JsonNode items, String nextUrl) {
+    public HFDatedModelsPageDTO(List<HFDatedModelDTO> items, String nextUrl) {
         this.items = items;
         this.nextUrl = nextUrl;
     }

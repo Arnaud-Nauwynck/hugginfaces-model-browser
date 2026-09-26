@@ -1,10 +1,11 @@
 package fr.an.llms.huggingface.service;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import fr.an.llms.configuration.HuggingFaceProperties;
+import fr.an.llms.rest.dtos.HFModelDTO;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -14,7 +15,10 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.Instant;
-import java.util.*;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.CRC32;
 
@@ -28,10 +32,7 @@ import java.util.zip.CRC32;
  *     year (much higher volume) producing a giant file
  *
  * Primary index (id -> year/shard/offset/length + cached secondary
- * values) persisted in index.json. Secondary indexes (by author,
- * pipeline_tag, library_name) are derived in memory at load time from
- * the primary index -> never persisted separately, so never
- * out of sync with the actual store between two startups.
+ * values) persisted in index.json.
  *
  * Compaction re-reads the JSON of each live record to rewrite the
  * shard; since this JSON is already at hand at that point, it takes
@@ -55,12 +56,14 @@ public class LlmModelRepository {
         public String author;
         public String pipelineTag;
         public String libraryName;
+        public String lastModified;
 
         public IndexEntry() {}
         public IndexEntry(String year, int shard, long offset, int length,
-                           String author, String pipelineTag, String libraryName) {
+                           String author, String pipelineTag, String libraryName, String lastModified) {
             this.year = year; this.shard = shard; this.offset = offset; this.length = length;
             this.author = author; this.pipelineTag = pipelineTag; this.libraryName = libraryName;
+            this.lastModified = lastModified;
         }
     }
 
@@ -72,12 +75,6 @@ public class LlmModelRepository {
     private final ConcurrentHashMap<String, IndexEntry> index = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> partitionLocks = new ConcurrentHashMap<>();
 
-    // Index secondaires : valeur -> ensemble d'ids. Dérivés, jamais persistés directement.
-    private final ConcurrentHashMap<String, Set<String>> byAuthor = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Set<String>> byPipelineTag = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Set<String>> byLibraryName = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Set<String>> byYear = new ConcurrentHashMap<>();
-
     public LlmModelRepository(HuggingFaceProperties huggingFaceProps) throws IOException {
         this.root = Paths.get(huggingFaceProps.getBaseDataDir());
         this.subShardsPerYear = huggingFaceProps.getSubShardsPerYear();
@@ -88,8 +85,7 @@ public class LlmModelRepository {
 
     // ================= PARTITIONING =================
 
-    private String yearOf(JsonNode node) {
-        String createdAt = node.path("createdAt").asText(null);
+    private String yearOf(String createdAt) {
         if (createdAt == null) return "unknown";
         try {
             return Instant.parse(createdAt).toString().substring(0, 4);
@@ -118,16 +114,17 @@ public class LlmModelRepository {
 
     // ================= WRITE =================
 
-    public void write(String repoId, String rawJson) throws IOException {
-        JsonNode node = mapper.readTree(rawJson);
-        String line = mapper.writeValueAsString(node); // minified, single line
+    public void save(HFModelDTO item) throws IOException {
+        String line = mapper.writeValueAsString(item); // minified, single line
         byte[] bytes = (line + "\n").getBytes(StandardCharsets.UTF_8);
 
-        String year = yearOf(node);
-        int shard = subShardFor(repoId);
-        String author = node.path("author").asText(null);
-        String pipelineTag = node.path("pipeline_tag").asText(null);
-        String libraryName = node.path("library_name").asText(null);
+        val modelHFInfo = item.huggingFaceInfo;
+        String year = yearOf(modelHFInfo.createdAt);
+        int shard = subShardFor(modelHFInfo.id);
+        String author = modelHFInfo.author;
+        String pipelineTag = modelHFInfo.pipelineTag;
+        String libraryName = modelHFInfo.libraryName;
+        String lastModified = modelHFInfo.lastModified;
 
         synchronized (lockFor(year, shard)) {
             Path path = shardPath(year, shard);
@@ -135,18 +132,14 @@ public class LlmModelRepository {
                 long offset = ch.size();
                 ch.write(ByteBuffer.wrap(bytes));
 
-                IndexEntry old = index.put(repoId,
-                        new IndexEntry(year, shard, offset, bytes.length - 1, author, pipelineTag, libraryName));
-                updateSecondaryIndexes(repoId, old, author, pipelineTag, libraryName, year);
+                index.put(modelHFInfo.id,
+                        new IndexEntry(year, shard, offset, bytes.length - 1, author, pipelineTag, libraryName, lastModified));
             }
         }
     }
 
     public void delete(String repoId) {
-        IndexEntry old = index.remove(repoId);
-        if (old != null) {
-            removeFromSecondaryIndexes(repoId, old);
-        }
+        index.remove(repoId);
     }
 
     public boolean exists(String repoId) {
@@ -155,10 +148,18 @@ public class LlmModelRepository {
 
     // ================= READ =================
 
-    public String read(String repoId) throws IOException {
+    public HFModelDTO findById(String repoId) {
         IndexEntry e = index.get(repoId);
-        if (e == null) return null;
-        return readAt(shardPath(e.year, e.shard), e.offset, e.length);
+        if (e == null) {
+            return null;
+        }
+        try {
+            String json = readAt(shardPath(e.year, e.shard), e.offset, e.length);
+            return mapper.readValue(json, HFModelDTO.class);
+        } catch(Exception ex) {
+            log.error("[repo] failed to read " + repoId + " at " + e.year + "/" + e.shard + " offset=" + e.offset + " length=" + e.length, ex);
+            return null;
+        }
     }
 
     private String readAt(Path path, long offset, int length) throws IOException {
@@ -170,45 +171,6 @@ public class LlmModelRepository {
         }
     }
 
-    // ================= SECONDARY INDEXES =================
-
-    private void addTo(ConcurrentHashMap<String, Set<String>> idx, String key, String id) {
-        if (key == null) return;
-        idx.computeIfAbsent(key, k -> ConcurrentHashMap.newKeySet()).add(id);
-    }
-
-    private void removeFrom(ConcurrentHashMap<String, Set<String>> idx, String key, String id) {
-        if (key == null) return;
-        Set<String> s = idx.get(key);
-        if (s != null) s.remove(id);
-    }
-
-    private void updateSecondaryIndexes(String id, IndexEntry old, String author, String pipelineTag,
-                                         String libraryName, String year) {
-        if (old != null) {
-            removeFrom(byAuthor, old.author, id);
-            removeFrom(byPipelineTag, old.pipelineTag, id);
-            removeFrom(byLibraryName, old.libraryName, id);
-            removeFrom(byYear, old.year, id);
-        }
-        addTo(byAuthor, author, id);
-        addTo(byPipelineTag, pipelineTag, id);
-        addTo(byLibraryName, libraryName, id);
-        addTo(byYear, year, id);
-    }
-
-    private void removeFromSecondaryIndexes(String id, IndexEntry old) {
-        removeFrom(byAuthor, old.author, id);
-        removeFrom(byPipelineTag, old.pipelineTag, id);
-        removeFrom(byLibraryName, old.libraryName, id);
-        removeFrom(byYear, old.year, id);
-    }
-
-    public Set<String> findByAuthor(String author) { return byAuthor.getOrDefault(author, Set.of()); }
-    public Set<String> findByPipelineTag(String tag) { return byPipelineTag.getOrDefault(tag, Set.of()); }
-    public Set<String> findByLibraryName(String lib) { return byLibraryName.getOrDefault(lib, Set.of()); }
-    public Set<String> findByYear(String year) { return byYear.getOrDefault(year, Set.of()); }
-
     // ================= PRIMARY INDEX: PERSISTENCE / RECOVERY =================
 
     public void saveIndex() {
@@ -217,7 +179,7 @@ public class LlmModelRepository {
             Files.writeString(tmp, mapper.writeValueAsString(index));
             Files.move(tmp, indexPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException e) {
-            System.err.println("[repo] failed to save index: " + e.getMessage());
+            log.error("[repo] failed to save index: " + e.getMessage());
         }
     }
 
@@ -227,26 +189,13 @@ public class LlmModelRepository {
                 Map<String, IndexEntry> loaded = mapper.readValue(Files.readString(indexPath),
                         mapper.getTypeFactory().constructMapType(HashMap.class, String.class, IndexEntry.class));
                 index.putAll(loaded);
-                rebuildSecondaryIndexesFromPrimary();
-                System.out.println("[repo] index loaded: " + index.size() + " entries");
+                log.info("[repo] index loaded: " + index.size() + " entries");
                 return;
             } catch (IOException e) {
-                System.err.println("[repo] index unreadable (" + e.getMessage() + "), rebuilding from partitions");
+                log.error("[repo] index unreadable (" + e.getMessage() + "), rebuilding from partitions");
             }
         }
         rebuildIndexFromPartitions();
-    }
-
-    /** Rebuilds the in-memory secondary indexes from the primary index (already loaded). */
-    private void rebuildSecondaryIndexesFromPrimary() {
-        byAuthor.clear(); byPipelineTag.clear(); byLibraryName.clear(); byYear.clear();
-        for (Map.Entry<String, IndexEntry> e : index.entrySet()) {
-            IndexEntry v = e.getValue();
-            addTo(byAuthor, v.author, e.getKey());
-            addTo(byPipelineTag, v.pipelineTag, e.getKey());
-            addTo(byLibraryName, v.libraryName, e.getKey());
-            addTo(byYear, v.year, e.getKey());
-        }
     }
 
     /**
@@ -269,8 +218,7 @@ public class LlmModelRepository {
                 }
             }
         }
-        rebuildSecondaryIndexesFromPrimary();
-        System.out.println("[repo] index rebuilt from partitions: " + index.size() + " entries");
+        log.info("[repo] index rebuilt from partitions: " + index.size() + " entries");
         saveIndex();
     }
 
@@ -287,13 +235,16 @@ public class LlmModelRepository {
                 int len = i - lineStart;
                 if (len > 0) {
                     try {
-                        JsonNode node = mapper.readTree(new String(all, lineStart, len, StandardCharsets.UTF_8));
-                        String id = node.path("id").asText(null);
+                        String jsonLine = new String(all, lineStart, len, StandardCharsets.UTF_8);
+                        HFModelDTO item = mapper.readValue(jsonLine, HFModelDTO.class);
+                        String id = item.id;
                         if (id != null) {
+                            val hfInfo = item.huggingFaceInfo;
                             index.put(id, new IndexEntry(year, shard, lineStart, len,
-                                    node.path("author").asText(null),
-                                    node.path("pipeline_tag").asText(null),
-                                    node.path("library_name").asText(null)));
+                                    hfInfo.author,
+                                    hfInfo.pipelineTag,
+                                    hfInfo.libraryName,
+                                    hfInfo.lastModified));
                         }
                     } catch (Exception ignored) {
                         // corrupted line (append interrupted mid-flight) -> ignored
@@ -337,18 +288,19 @@ public class LlmModelRepository {
                     String id = e.getKey();
 
                     String content = readAt(path, loc.offset, loc.length);
-                    JsonNode node = mapper.readTree(content); // re-read -> source of truth for secondary fields
-                    String author = node.path("author").asText(null);
-                    String pipelineTag = node.path("pipeline_tag").asText(null);
-                    String libraryName = node.path("library_name").asText(null);
+                    HFModelDTO item = mapper.readValue(content, HFModelDTO.class);
+                    val hfInfo = item.huggingFaceInfo;
+                    String author = hfInfo.author;
+                    String pipelineTag = hfInfo.pipelineTag;
+                    String libraryName = hfInfo.libraryName;
+                    String lastModified = hfInfo.lastModified;
 
                     byte[] bytes = (content + "\n").getBytes(StandardCharsets.UTF_8);
                     out.write(ByteBuffer.wrap(bytes));
 
                     IndexEntry newEntry = new IndexEntry(year, shard, writeOffset, bytes.length - 1,
-                            author, pipelineTag, libraryName);
+                            author, pipelineTag, libraryName, lastModified);
                     refreshed.put(id, newEntry);
-                    updateSecondaryIndexes(id, loc, author, pipelineTag, libraryName, year); // fixes any drift
                     writeOffset += bytes.length;
                 }
             }
