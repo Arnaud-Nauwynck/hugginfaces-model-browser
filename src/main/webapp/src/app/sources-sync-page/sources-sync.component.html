@@ -1,0 +1,27 @@
+<div class="form-check mb-2">
+  <input class="form-check-input" type="checkbox" id="showAdvanced"
+         [checked]="showAdvanced()" (change)="showAdvanced.set(!showAdvanced())">
+  <label class="form-check-label" for="showAdvanced">Show advanced</label>
+</div>
+
+<H1>Hugging-Face Synchronisation</H1>
+
+<div class="text-secondary small mb-2">
+  <div>Last sync threshold: {{ formatInstant(lastSyncState().lastSyncThreshold) ?? 'never' }}</div>
+  <div>Full scan complete: {{ lastSyncState().fullScanComplete ?? false }}</div>
+  <div>Total models synced: {{ lastSyncState().totalModelsSynced ?? 0 }}</div>
+  <div>Last run errors: {{ lastSyncState().lastRunErrors ?? 0 }}</div>
+
+  @if (showAdvanced()) {
+    <div>Full scan next url: {{ lastSyncState().fullScanNextUrl ?? '-' }}</div>
+    <div>Incremental next url: {{ lastSyncState().incrementalNextUrl ?? '-' }}</div>
+    <div>Newest seen this run: {{ formatInstant(lastSyncState().newestSeenThisRun) ?? '-' }}</div>
+  }
+</div>
+<button class="btn btn-primary" type="button" [disabled]="huggingFaceSyncRunning()" (click)="runSyncAll()">
+  Run Sync All
+</button>
+
+<button class="btn btn-primary" type="button" [disabled]="huggingFaceSyncRunning()" (click)="runSyncIncremental()">
+  Run Sync Incremental
+</button>

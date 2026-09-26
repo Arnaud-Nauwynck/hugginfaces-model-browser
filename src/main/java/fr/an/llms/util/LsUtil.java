@@ -1,4 +1,4 @@
-package fr.an.huggingface.util;
+package fr.an.llms.util;
 
 import jakarta.annotation.Nonnull;
 import lombok.val;

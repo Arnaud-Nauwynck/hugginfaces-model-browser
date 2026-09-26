@@ -109,33 +109,6 @@
                 </executions>
             </plugin>
 
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-pmd-plugin</artifactId>
-                <version>3.28.0</version>
-                <configuration>
-                    <linkXRef>false</linkXRef>
-                    <printFailingErrors>true</printFailingErrors>
-                    <failOnViolation>false</failOnViolation>
-                    <minimumTokens>100</minimumTokens>
-                    <targetJdk>25</targetJdk>
-                    <excludes>
-                        <exclude>**/generated/*.java</exclude>
-                    </excludes>
-                    <excludeRoots>
-                        <excludeRoot>target/generated-sources</excludeRoot>
-                    </excludeRoots>
-                </configuration>
-                <executions>
-                    <execution>
-                        <phase>verify</phase>
-                        <goals>
-                            <goal>check</goal>
-                            <goal>cpd-check</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
         </plugins>
     </build>
 
@@ -214,7 +187,6 @@
                                 </goals>
                                 <configuration>
                                     <generatorName>typescript-angular</generatorName>
-                                    <verbose>true</verbose>
                                     <output>${basedir}/target/generated-typescript-angular</output>
                                     <configOptions>
                                         <!--

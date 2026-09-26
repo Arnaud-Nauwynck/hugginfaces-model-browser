@@ -1,4 +1,4 @@
-package fr.an.huggingface.rest;
+package fr.an.llms.rest;
 
 import java.util.Collection;
 import java.util.function.Function;

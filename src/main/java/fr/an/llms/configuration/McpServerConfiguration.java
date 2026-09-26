@@ -1,4 +1,4 @@
-package fr.an.huggingface.configuration;
+package fr.an.llms.configuration;
 
 //@Configuration
 public class McpServerConfiguration {
