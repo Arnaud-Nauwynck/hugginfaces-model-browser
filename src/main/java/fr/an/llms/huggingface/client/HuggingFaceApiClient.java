@@ -113,6 +113,7 @@ public class HuggingFaceApiClient {
                 if (waitMs > 0) {
                     log.warn("[http] rateLimitRemain=" + rateLimitRemain.get() + " -> wait " + waitMs + "ms");
                     Thread.sleep(waitMs);
+                    log.info("[http] resuming after wait ... http GET " + url);
                 }
             }
 

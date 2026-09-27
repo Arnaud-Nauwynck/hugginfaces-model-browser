@@ -3,6 +3,7 @@ package fr.an.llms.huggingface.service;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import fr.an.llms.configuration.HuggingFaceProperties;
+import fr.an.llms.rest.dtos.HFModelCriteria;
 import fr.an.llms.rest.dtos.HFModelDTO;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
@@ -20,6 +21,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.zip.CRC32;
 
 /**
@@ -43,7 +45,7 @@ import java.util.zip.CRC32;
  */
 @Component
 @Slf4j
-public class LlmModelRepository {
+public class HuggingFaceModelRepository {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class IndexEntry {
@@ -75,7 +77,7 @@ public class LlmModelRepository {
     private final ConcurrentHashMap<String, IndexEntry> index = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> partitionLocks = new ConcurrentHashMap<>();
 
-    public LlmModelRepository(HuggingFaceProperties huggingFaceProps) throws IOException {
+    public HuggingFaceModelRepository(HuggingFaceProperties huggingFaceProps) throws IOException {
         this.root = Paths.get(huggingFaceProps.getBaseDataDir());
         this.subShardsPerYear = huggingFaceProps.getSubShardsPerYear();
         this.indexPath = root.resolve("index.json");
@@ -85,7 +87,7 @@ public class LlmModelRepository {
 
     // ================= PARTITIONING =================
 
-    private String yearOf(String createdAt) {
+    public static String partitionYearOf(String createdAt) {
         if (createdAt == null) return "unknown";
         try {
             return Instant.parse(createdAt).toString().substring(0, 4);
@@ -119,7 +121,7 @@ public class LlmModelRepository {
         byte[] bytes = (line + "\n").getBytes(StandardCharsets.UTF_8);
 
         val modelHFInfo = item.huggingFaceInfo;
-        String year = yearOf(modelHFInfo.createdAt);
+        String year = partitionYearOf(modelHFInfo.createdAt);
         int shard = subShardFor(modelHFInfo.id);
         String author = modelHFInfo.author;
         String pipelineTag = modelHFInfo.pipelineTag;
@@ -148,6 +150,11 @@ public class LlmModelRepository {
 
     // ================= READ =================
 
+    public HFModelDTO findByPartitionAndId(String yearPartition, String repoId) {
+        return findById(repoId); // currently not used, but could be optimized to avoid reading
+    }
+
+
     public HFModelDTO findById(String repoId) {
         IndexEntry e = index.get(repoId);
         if (e == null) {
@@ -168,6 +175,43 @@ public class LlmModelRepository {
             byte[] buf = new byte[length];
             raf.readFully(buf);
             return new String(buf, StandardCharsets.UTF_8);
+        }
+    }
+
+    // ================= SCAN =================
+
+    /** Distinct (year, shard) partitions currently present in the index. */
+    public Set<String> partitions() {
+        Set<String> partitions = new HashSet<>();
+        for (IndexEntry e : index.values()) partitions.add(e.year + "/" + e.shard);
+        return partitions;
+    }
+
+    /** Scans every partition, invoking the callback for each stored model matching criteria. */
+    public void scanAll(HFModelCriteria criteria, Consumer<HFModelDTO> callback) throws IOException {
+        for (String partition : partitions()) {
+            String[] parts = partition.split("/", 2);
+            scanByPartition(parts[0], Integer.parseInt(parts[1]), criteria, callback);
+        }
+    }
+
+    /** Scans a single (year, shard) partition, invoking the callback for each stored model matching criteria. */
+    public void scanByPartition(String year, int shard, HFModelCriteria criteria, Consumer<HFModelDTO> callback) throws IOException {
+        Path path = shardPath(year, shard);
+        for (Map.Entry<String, IndexEntry> e : index.entrySet()) {
+            IndexEntry loc = e.getValue();
+            if (!loc.year.equals(year) || loc.shard != shard) continue;
+
+            try {
+                String json = readAt(path, loc.offset, loc.length);
+                HFModelDTO item = mapper.readValue(json, HFModelDTO.class);
+                if (criteria == null || criteria.test(item)) {
+                    callback.accept(item);
+                }
+            } catch (Exception ex) {
+                log.error("[repo] failed to read " + e.getKey() + " at " + year + "/" + shard
+                        + " offset=" + loc.offset + " length=" + loc.length, ex);
+            }
         }
     }
 

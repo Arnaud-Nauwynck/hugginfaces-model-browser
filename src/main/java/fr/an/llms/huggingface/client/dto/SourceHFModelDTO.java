@@ -48,11 +48,15 @@ public class SourceHFModelDTO {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class CardDataDTO {
-        public String license;
+        /** String or List<String> */
+        public Object license;
+
         @JsonProperty("library_name")
         public String libraryName;
+
         @JsonProperty("pipeline_tag")
         public String pipelineTag;
+
         public List<String> tags;
     }
 

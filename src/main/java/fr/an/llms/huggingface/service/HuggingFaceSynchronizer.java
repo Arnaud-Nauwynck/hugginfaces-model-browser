@@ -7,6 +7,7 @@ import fr.an.llms.huggingface.client.dto.HFDatedModelsPageDTO;
 import fr.an.llms.huggingface.client.dto.SourceHFModelDTO;
 import fr.an.llms.rest.dtos.HFModelDTO;
 import lombok.extern.slf4j.Slf4j;
+import lombok.val;
 import org.springframework.stereotype.Component;
 
 import java.nio.file.Path;
@@ -39,7 +40,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class HuggingFaceSynchronizer {
 
     private final HuggingFaceApiClient huggingFaceClient;
-    private final LlmModelRepository store;
+    private final HuggingFaceModelRepository store;
     private final Path statePath;
     private final int concurrency;
     private final long delayMsPerRequest;
@@ -47,7 +48,7 @@ public class HuggingFaceSynchronizer {
     private final AtomicLong processed = new AtomicLong();
     private final AtomicLong errors = new AtomicLong();
 
-    public HuggingFaceSynchronizer(HuggingFaceApiClient huggingFaceClient, LlmModelRepository store,
+    public HuggingFaceSynchronizer(HuggingFaceApiClient huggingFaceClient, HuggingFaceModelRepository store,
                                    HuggingFaceProperties huggingFaceProps) {
         this.huggingFaceClient = huggingFaceClient;
         this.store = store;
@@ -197,7 +198,8 @@ public class HuggingFaceSynchronizer {
     private void fetchAndStore(List<HFDatedModelDTO> datedModels, ExecutorService pool) throws InterruptedException {
         List<Future<?>> futures = new ArrayList<>();
         for (HFDatedModelDTO datedModel : datedModels) {
-            HFModelDTO prev = store.findById(datedModel.id);
+            val partitionYear = HuggingFaceModelRepository.partitionYearOf(datedModel.createdAt);
+            HFModelDTO prev = store.findByPartitionAndId(partitionYear, datedModel.id);
             if (prev != null && prev.equals(datedModel.lastModified)) {
                 processed.incrementAndGet();
                 continue;
