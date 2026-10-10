@@ -44,4 +44,10 @@ public class HuggingFaceSyncRestController extends AbstractRestController {
         withLog(log, "POST", "/run-sync-incremental", "", huggingFaceSynchronizer::runIncremental);
     }
 
+    @Operation(summary = "Process the data")
+    @PostMapping("/process")
+    public void process() {
+        withLog(log, "POST", "/process", "", huggingFaceSynchronizer::process);
+    }
+
 }

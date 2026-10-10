@@ -70,4 +70,20 @@ export class SourcesSyncPage implements OnInit {
     });
   }
 
+  process() {
+    this.running.set(true);
+    console.log("call http POST /api/v1/huggingface-sync/process");
+    this.huggingFaceSyncService.process().subscribe({
+      next: () => {
+        this.running.set(false);
+        console.log("... done call http POST /api/v1/huggingface-sync/process");
+        this.refreshLastSync();
+      },
+      error: (ex) => {
+        this.running.set(false);
+        console.error("... Failed call http POST /api/v1/huggingface-sync/process", ex);
+      }
+    });
+  }
+
 }

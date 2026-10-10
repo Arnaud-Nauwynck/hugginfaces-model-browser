@@ -1,0 +1,170 @@
+<div class="hfmodels-search-container">
+  <h1>Search HuggingFace Models</h1>
+
+  <!-- Collapsible Search Criteria -->
+  <div class="card mb-3">
+    <div class="card-header">
+      <button
+        class="btn btn-link w-100 text-start"
+        (click)="showCriteria.set(!showCriteria())"
+      >
+        <span class="toggle-icon">{{ showCriteria() ? '▼' : '▶' }}</span>
+        Search Criteria
+      </button>
+    </div>
+    @if (showCriteria()) {
+      <div class="card-body">
+        <div class="row mb-3">
+          <div class="col-md-6">
+            <label for="authorContains" class="form-label">Author Contains</label>
+            <input
+              id="authorContains"
+              type="text"
+              class="form-control"
+              placeholder="e.g., OpenAI"
+              [(ngModel)]="authorContains"
+              (keydown)="onKeyDown($event)"
+            />
+          </div>
+          <div class="col-md-6">
+            <label for="authorEquals" class="form-label">Author Equals</label>
+            <input
+              id="authorEquals"
+              type="text"
+              class="form-control"
+              placeholder="Exact author name"
+              [(ngModel)]="authorEquals"
+              (keydown)="onKeyDown($event)"
+            />
+          </div>
+        </div>
+        <div class="row mb-3">
+          <div class="col-md-6">
+            <label for="limit" class="form-label">Result Limit</label>
+            <input
+              id="limit"
+              type="number"
+              class="form-control"
+              [ngModel]="limit()"
+              (change)="limit.set(+$event.target.value)"
+              min="1"
+              max="1000"
+            />
+          </div>
+        </div>
+        <div class="row mb-3">
+          <div class="col-md-6">
+            <label for="createdDateRange" class="form-label">Created Date</label>
+            <select
+              id="createdDateRange"
+              class="form-select"
+              [ngModel]="createdDateRange()"
+              (change)="onCreatedDateRangeChange($event)"
+            >
+              <option value="">-- Any Time --</option>
+              <option value="last1w">Last 1 Week</option>
+              <option value="last1m">Last 1 Month</option>
+              <option value="last3m">Last 3 Months</option>
+              <option value="last6m">Last 6 Months</option>
+              <option value="last1y">Last 1 Year</option>
+              <option value="last2y">Last 2 Years</option>
+              <option value="last3y">Last 3 Years</option>
+              <option value="last4y">Last 4 Years</option>
+              <option value="last5y">Last 5 Years</option>
+              <option value="advanced">Advanced</option>
+            </select>
+          </div>
+        </div>
+        @if (createdDateRange() === 'advanced') {
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <label for="createdDateFrom" class="form-label">Created Date From</label>
+              <input
+                id="createdDateFrom"
+                type="date"
+                class="form-control"
+                [(ngModel)]="createdDateFrom"
+                (keydown)="onKeyDown($event)"
+              />
+            </div>
+            <div class="col-md-6">
+              <label for="createdDateTo" class="form-label">Created Date To</label>
+              <input
+                id="createdDateTo"
+                type="date"
+                class="form-control"
+                [(ngModel)]="createdDateTo"
+                (keydown)="onKeyDown($event)"
+              />
+            </div>
+          </div>
+        }
+        <div class="btn-group" role="group">
+          <button
+            class="btn btn-primary"
+            type="button"
+            [disabled]="searchLoading()"
+            (click)="search()"
+          >
+            {{ searchLoading() ? 'Searching...' : 'Search' }}
+          </button>
+          <button
+            class="btn btn-info"
+            type="button"
+            [disabled]="statisticsLoading()"
+            (click)="computeStatistics()"
+          >
+            {{ statisticsLoading() ? 'Computing...' : 'Statistics' }}
+          </button>
+          <button
+            class="btn btn-secondary"
+            type="button"
+            [disabled]="searchLoading() || statisticsLoading()"
+            (click)="clearSearch()"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+    }
+  </div>
+
+  <!-- Statistics View -->
+  @if (statistics()) {
+    <div class="mb-3">
+      <app-model-statistics [statistics]="statistics()"></app-model-statistics>
+    </div>
+  }
+
+  <!-- Results Grid and Details -->
+  @if (models().length > 0) {
+    <div class="row">
+      <div class="col-md-7">
+        <div class="card">
+          <div class="card-header">
+            <h5 class="mb-0">Results ({{ models().length }} models)</h5>
+          </div>
+          <div class="card-body p-0">
+            <ag-grid-angular
+              class="ag-theme-quartz"
+              [rowData]="models()"
+              [columnDefs]="gridColDefs()"
+              [rowSelection]="'single'"
+              (selectionChanged)="onSelectionChanged($event)"
+              [domLayout]="'autoHeight'"
+              [defaultColDef]="{sortable: true, filter: true}"
+            ></ag-grid-angular>
+          </div>
+        </div>
+      </div>
+
+      <!-- Details Panel -->
+      <div class="col-md-5">
+        <app-hfmodel-detail-panel [selectedModel]="selectedModel()"></app-hfmodel-detail-panel>
+      </div>
+    </div>
+  } @else if (!searchLoading()) {
+    <div class="alert alert-info">
+      Use the search criteria above to find models
+    </div>
+  }

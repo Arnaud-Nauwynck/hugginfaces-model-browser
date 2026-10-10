@@ -1,0 +1,94 @@
+@if (statistics) {
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="mb-0">Model Statistics</h5>
+      <div class="btn-group btn-group-sm" role="group">
+        <input
+          type="radio"
+          class="btn-check"
+          name="statsMode"
+          id="gridMode"
+          [checked]="displayMode() === 'grid'"
+          (change)="setDisplayMode('grid')"
+        />
+        <label class="btn btn-outline-primary" for="gridMode">Grid</label>
+
+        <input
+          type="radio"
+          class="btn-check"
+          name="statsMode"
+          id="chartsMode"
+          [checked]="displayMode() === 'charts'"
+          (change)="setDisplayMode('charts')"
+        />
+        <label class="btn btn-outline-primary" for="chartsMode">Author Charts</label>
+
+        <input
+          type="radio"
+          class="btn-check"
+          name="statsMode"
+          id="modelChartsMode"
+          [checked]="displayMode() === 'modelCharts'"
+          (change)="setDisplayMode('modelCharts')"
+        />
+        <label class="btn btn-outline-primary" for="modelChartsMode">Model Charts</label>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      @if (rowData().length === 0) {
+        <div class="p-3 text-muted">No statistics available</div>
+      } @else {
+        <!-- Grid View -->
+        @if (displayMode() === 'grid') {
+          <ag-grid-angular
+            class="ag-theme-quartz"
+            [rowData]="rowData()"
+            [columnDefs]="gridColDefs()"
+            [domLayout]="'autoHeight'"
+            [defaultColDef]="{sortable: true, filter: true}"
+          ></ag-grid-angular>
+        }
+
+        <!-- Author Charts View -->
+        @if (displayMode() === 'charts') {
+          <div class="charts-container">
+            <div class="chart-section">
+              @if (likesChartOptions()) {
+                <app-highcharts-chart [options]="likesChartOptions()"></app-highcharts-chart>
+              } @else {
+                <div class="p-3 text-muted">Loading chart...</div>
+              }
+            </div>
+            <div class="chart-section">
+              @if (downloadsChartOptions()) {
+                <app-highcharts-chart [options]="downloadsChartOptions()"></app-highcharts-chart>
+              } @else {
+                <div class="p-3 text-muted">Loading chart...</div>
+              }
+            </div>
+          </div>
+        }
+
+        <!-- Model Charts View -->
+        @if (displayMode() === 'modelCharts') {
+          <div class="charts-container">
+            <div class="chart-section">
+              @if (modelLikesChartOptions()) {
+                <app-highcharts-chart [options]="modelLikesChartOptions()"></app-highcharts-chart>
+              } @else {
+                <div class="p-3 text-muted">Loading chart...</div>
+              }
+            </div>
+            <div class="chart-section">
+              @if (modelDownloadsChartOptions()) {
+                <app-highcharts-chart [options]="modelDownloadsChartOptions()"></app-highcharts-chart>
+              } @else {
+                <div class="p-3 text-muted">Loading chart...</div>
+              }
+            </div>
+          </div>
+        }
+      }
+    </div>
+  </div>
+}

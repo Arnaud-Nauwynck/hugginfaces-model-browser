@@ -1,0 +1,25 @@
+:host {
+  display: block;
+}
+
+.ag-theme-quartz {
+  font-family: inherit;
+}
+
+.charts-container {
+  padding: 20px;
+  background-color: #fff;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.chart-section {
+  min-height: 450px;
+}
+
+@media (max-width: 1200px) {
+  .charts-container {
+    grid-template-columns: 1fr;
+  }
+}

@@ -2,8 +2,9 @@ package fr.an.llms.huggingface.client.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -42,7 +43,8 @@ public class SourceHFModelDTO {
     public TransformersInfoDTO transformersInfo;
     public List<SiblingDTO> siblings;
     public List<String> spaces;
-    public String createdAt;
+    // public String createdAt;
+    public LocalDate createdAt;
     public SafetensorsDTO safetensors;
     public long usedStorage;
 

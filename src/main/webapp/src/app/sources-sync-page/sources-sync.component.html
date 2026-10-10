@@ -25,3 +25,7 @@
 <button class="btn btn-primary" type="button" [disabled]="huggingFaceSyncRunning()" (click)="runSyncIncremental()">
   Run Sync Incremental
 </button>
+
+<button class="btn btn-primary" type="button" [disabled]="running()" (click)="process()">
+  Process
+</button>

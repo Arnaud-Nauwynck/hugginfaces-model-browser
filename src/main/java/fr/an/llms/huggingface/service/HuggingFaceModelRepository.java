@@ -1,7 +1,10 @@
 package fr.an.llms.huggingface.service;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import fr.an.llms.huggingface.client.dto.SourceHFModelDTO;
+import fr.an.llms.rest.dtos.HFModelCriteriaDTO;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import fr.an.llms.configuration.HuggingFaceProperties;
 import fr.an.llms.rest.dtos.HFModelCriteria;
 import fr.an.llms.rest.dtos.HFModelDTO;
@@ -16,11 +19,14 @@ import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 import java.util.zip.CRC32;
 
@@ -82,18 +88,29 @@ public class HuggingFaceModelRepository {
         this.subShardsPerYear = huggingFaceProps.getSubShardsPerYear();
         this.indexPath = root.resolve("index.json");
         Files.createDirectories(root);
-        loadIndexOrRebuild();
+        ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "HF-Repository-Initializer");
+            t.setDaemon(true);
+            return t;
+        });
+        executor.submit(() -> {
+            try {
+                loadIndexOrRebuild();
+                log.info("[repo] initialization complete");
+            } catch (IOException e) {
+                log.error("[repo] failed to initialize index", e);
+            }
+        });
+        executor.shutdown();
     }
 
     // ================= PARTITIONING =================
 
-    public static String partitionYearOf(String createdAt) {
-        if (createdAt == null) return "unknown";
-        try {
-            return Instant.parse(createdAt).toString().substring(0, 4);
-        } catch (Exception e) {
+    public static String partitionYearOf(LocalDate createdAt) {
+        if (createdAt == null) {
             return "unknown";
         }
+        return "" + createdAt.getYear();
     }
 
     private int subShardFor(String id) {
@@ -102,12 +119,18 @@ public class HuggingFaceModelRepository {
         return (int) (crc.getValue() % subShardsPerYear);
     }
 
-    private Path shardPath(String year, int shard) throws IOException {
+    private Path shardPath(String year, int shard) {
         Path dir = root.resolve(year);
-        Files.createDirectories(dir);
-        Path p = dir.resolve(String.format("shard-%04d.ndjson", shard));
-        if (!Files.exists(p)) Files.createFile(p);
-        return p;
+        try {
+            Path p = dir.resolve(String.format("shard-%04d.ndjson", shard));
+            if (!Files.exists(p)) {
+                Files.createDirectories(dir);
+                Files.createFile(p);
+            }
+            return p;
+        } catch(IOException ex) {
+            throw new RuntimeException("Failed to create partition file", ex);
+        }
     }
 
     private Object lockFor(String year, int shard) {
@@ -116,8 +139,13 @@ public class HuggingFaceModelRepository {
 
     // ================= WRITE =================
 
-    public void save(HFModelDTO item) throws IOException {
-        String line = mapper.writeValueAsString(item); // minified, single line
+    public void save(HFModelDTO item) {
+        String line;
+        try {
+            line = mapper.writeValueAsString(item);
+        } catch (JacksonException e) {
+            throw new RuntimeException(e);
+        }
         byte[] bytes = (line + "\n").getBytes(StandardCharsets.UTF_8);
 
         val modelHFInfo = item.huggingFaceInfo;
@@ -136,6 +164,8 @@ public class HuggingFaceModelRepository {
 
                 index.put(modelHFInfo.id,
                         new IndexEntry(year, shard, offset, bytes.length - 1, author, pipelineTag, libraryName, lastModified));
+            } catch(IOException ex) {
+                throw new RuntimeException("Failed to write", ex);
             }
         }
     }
@@ -180,39 +210,91 @@ public class HuggingFaceModelRepository {
 
     // ================= SCAN =================
 
-    /** Distinct (year, shard) partitions currently present in the index. */
-    public Set<String> partitions() {
-        Set<String> partitions = new HashSet<>();
-        for (IndexEntry e : index.values()) partitions.add(e.year + "/" + e.shard);
-        return partitions;
-    }
-
-    /** Scans every partition, invoking the callback for each stored model matching criteria. */
-    public void scanAll(HFModelCriteria criteria, Consumer<HFModelDTO> callback) throws IOException {
-        for (String partition : partitions()) {
-            String[] parts = partition.split("/", 2);
-            scanByPartition(parts[0], Integer.parseInt(parts[1]), criteria, callback);
-        }
-    }
-
-    /** Scans a single (year, shard) partition, invoking the callback for each stored model matching criteria. */
-    public void scanByPartition(String year, int shard, HFModelCriteria criteria, Consumer<HFModelDTO> callback) throws IOException {
-        Path path = shardPath(year, shard);
-        for (Map.Entry<String, IndexEntry> e : index.entrySet()) {
-            IndexEntry loc = e.getValue();
-            if (!loc.year.equals(year) || loc.shard != shard) continue;
-
-            try {
-                String json = readAt(path, loc.offset, loc.length);
-                HFModelDTO item = mapper.readValue(json, HFModelDTO.class);
-                if (criteria == null || criteria.test(item)) {
-                    callback.accept(item);
-                }
-            } catch (Exception ex) {
-                log.error("[repo] failed to read " + e.getKey() + " at " + year + "/" + shard
-                        + " offset=" + loc.offset + " length=" + loc.length, ex);
+    /** Scans every partition, invoking the callback for each stored model matching criteria, until limit matches are found. */
+    public void scanAll(HFModelCriteria criteria, Integer limit, Consumer<HFModelDTO> callback) throws IOException {
+        int remaining = limit != null ? limit : Integer.MAX_VALUE;
+        Set<String> prunedYears = filterYearPartitions(criteria);
+        for (String year : prunedYears) {
+            for (int shard = 0; shard < subShardsPerYear; shard++) {
+                if (remaining <= 0) return;
+                remaining -= scanByPartition(year, shard, criteria, remaining, callback);
             }
         }
+    }
+
+    /** Prunes year partitions based on createdDateFrom/To criteria to skip unnecessary I/O. */
+    private Set<String> filterYearPartitions(HFModelCriteria criteria) {
+        Set<String> allYears = yearPartitions();
+        if (criteria == null) return allYears;
+
+        HFModelCriteriaDTO critDTO = criteria.criteria;
+        if (critDTO == null || (critDTO.createdDateFrom == null && critDTO.createdDateTo == null)) {
+            return allYears;
+        }
+
+        Set<String> filtered = new HashSet<>();
+        for (String yearStr : allYears) {
+            try {
+                int year = Integer.parseInt(yearStr);
+                // Skip partitions entirely before createdDateFrom year
+                if (critDTO.createdDateFrom != null && year < critDTO.createdDateFrom.getYear()) {
+                    continue;
+                }
+                // Skip partitions entirely after createdDateTo year
+                if (critDTO.createdDateTo != null && year > critDTO.createdDateTo.getYear()) {
+                    continue;
+                }
+                filtered.add(yearStr);
+            } catch (NumberFormatException e) {
+                // Non-numeric year partition (e.g., "unknown"), keep it for safety
+                filtered.add(yearStr);
+            }
+        }
+        return filtered;
+    }
+
+    /** Distinct year partitions currently present in the index. */
+    private Set<String> yearPartitions() {
+        Set<String> years = new HashSet<>();
+        for (IndexEntry e : index.values()) years.add(e.year);
+        return years;
+    }
+
+    /**
+     * Full sequential scan of a single (year, shard) partition file, invoking the callback
+     * for each stored model matching criteria, until limit matches are found.
+     * Returns the number of matches found (and passed to the callback).
+     */
+    public int scanByPartition(String year, int shard, HFModelCriteria criteria, Integer limit, Consumer<HFModelDTO> callback) throws IOException {
+        int remaining = limit != null ? limit : Integer.MAX_VALUE;
+        int matched = 0;
+        Path shardFile = shardPath(year, shard);
+        byte[] all = Files.readAllBytes(shardFile);
+        int lineStart = 0;
+        for (int i = 0; i < all.length && remaining > 0; i++) {
+            if (all[i] == '\n') {
+                int len = i - lineStart;
+                if (len > 0) {
+                    String jsonLine = new String(all, lineStart, len, StandardCharsets.UTF_8);
+                    try {
+                        HFModelDTO item = mapper.readValue(jsonLine, HFModelDTO.class);
+                        if (criteria == null || criteria.test(item)) {
+                            callback.accept(item);
+                            matched++;
+                            remaining--;
+                        }
+                    } catch (Exception ex) {
+                        log.warn("[repo] failed to parse line in " + year + "/" + shard
+                                + " at offset=" + lineStart + " length=" + len
+                                + ", jsonLine: \n" + jsonLine
+                                + "\n... ignore, no rethrow! ex:" + ex.getMessage()
+                        );
+                    }
+                }
+                lineStart = i + 1;
+            }
+        }
+        return matched;
     }
 
     // ================= PRIMARY INDEX: PERSISTENCE / RECOVERY =================
@@ -310,9 +392,14 @@ public class HuggingFaceModelRepository {
         Set<String> partitions = new HashSet<>();
         for (IndexEntry e : index.values()) partitions.add(e.year + "/" + e.shard);
 
+        int partitionCount = partitions.size();
+        log.info("[repo] compactAll: " + partitionCount + " partitions");
+        int partitionNum = 0;
         for (String partition : partitions) {
+            log.info("compact [" + partitionNum + "/" + partitionCount + "] partition " + partition);
             String[] parts = partition.split("/", 2);
             compactPartition(parts[0], Integer.parseInt(parts[1]));
+            partitionNum++;
         }
         saveIndex();
     }
@@ -332,20 +419,40 @@ public class HuggingFaceModelRepository {
                     String id = e.getKey();
 
                     String content = readAt(path, loc.offset, loc.length);
-                    HFModelDTO item = mapper.readValue(content, HFModelDTO.class);
-                    val hfInfo = item.huggingFaceInfo;
-                    String author = hfInfo.author;
-                    String pipelineTag = hfInfo.pipelineTag;
-                    String libraryName = hfInfo.libraryName;
-                    String lastModified = hfInfo.lastModified;
 
-                    byte[] bytes = (content + "\n").getBytes(StandardCharsets.UTF_8);
-                    out.write(ByteBuffer.wrap(bytes));
+                    try {
+                        HFModelDTO item;
+                        try {
+                            item = mapper.readValue(content, HFModelDTO.class);
+                        } catch(Exception ex) {
+                            // backward-compatibility: some old records may have been stored with a SourceHFModelDTO instead of HFModelDTO
+                            val source = mapper.readValue(content, SourceHFModelDTO.class);
+                            item = new HFModelDTO();
+                            item.id = source.id;
+                            item.huggingFaceInfo = source;
+                            content = mapper.writeValueAsString(item);
+                        }
 
-                    IndexEntry newEntry = new IndexEntry(year, shard, writeOffset, bytes.length - 1,
-                            author, pipelineTag, libraryName, lastModified);
-                    refreshed.put(id, newEntry);
-                    writeOffset += bytes.length;
+                        val hfInfo = item.huggingFaceInfo;
+                        String author = hfInfo.author;
+                        String pipelineTag = hfInfo.pipelineTag;
+                        String libraryName = hfInfo.libraryName;
+                        String lastModified = hfInfo.lastModified;
+
+                        byte[] bytes = (content + "\n").getBytes(StandardCharsets.UTF_8);
+                        out.write(ByteBuffer.wrap(bytes));
+
+                        IndexEntry newEntry = new IndexEntry(year, shard, writeOffset, bytes.length - 1,
+                                author, pipelineTag, libraryName, lastModified);
+                        refreshed.put(id, newEntry);
+                        writeOffset += bytes.length;
+                    } catch(Exception ex) {
+                        log.warn("[repo] failed to parse line in " + year + "/" + shard
+                                + " at offset=" + loc.offset + " length=" + loc.length
+                                + ", jsonLine: \n" + content
+                                + "\n... ignore, no rethrow! ex:" + ex.getMessage()
+                        );
+                    }
                 }
             }
 

@@ -10,6 +10,10 @@
 
 
 export interface HFModelCriteriaDTO { 
+    createdDateFrom?: string;
+    createdDateTo?: string;
+    nameContains?: string;
+    nameEquals?: string;
     authorContains?: string;
     authorEquals?: string;
 }

@@ -7,6 +7,7 @@ import fr.an.llms.huggingface.service.HuggingFaceModelRepository;
 import fr.an.llms.rest.dtos.HFModelCriteria;
 import fr.an.llms.rest.dtos.HFModelDTO;
 import fr.an.llms.rest.dtos.HFModelQueryDTO;
+import fr.an.llms.rest.dtos.ModelStatisticsDTO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +42,13 @@ public class HuggingFaceModelRestController extends AbstractRestController {
     @GetMapping("/by-id/{id}")
     public HFModelDTO getModelById(@PathVariable("id") String id) {
         return withLog(log, "GET", "/{id}", id, () -> delegate.getModelById(id));
+    }
+
+    @Operation(summary = "Compute statistics (by month/author) for models matching criteria")
+    @PostMapping("/statistics")
+    public ModelStatisticsDTO computeStatistics(@RequestBody HFModelQueryDTO req) {
+        HFModelCriteria criteria = new HFModelCriteria(req.criteria);
+        return withLog(log, "POST", "/statistics", "" + req, () -> delegate.computeModelStatistics(criteria, req.limit));
     }
 
 }

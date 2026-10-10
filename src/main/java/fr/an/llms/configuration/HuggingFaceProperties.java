@@ -17,5 +17,5 @@ public class HuggingFaceProperties {
 
 
     private int synchronizationConcurrency = 2;
-    private long delayMsPerRequest = 100;
+    private long delayMsPerRequest = 150;
 }

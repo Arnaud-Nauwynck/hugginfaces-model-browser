@@ -2,9 +2,8 @@ package fr.an.llms.huggingface.service;
 
 import fr.an.llms.configuration.HuggingFaceProperties;
 import fr.an.llms.huggingface.client.HuggingFaceApiClient;
-import fr.an.llms.huggingface.client.dto.HFDatedModelDTO;
-import fr.an.llms.huggingface.client.dto.HFDatedModelsPageDTO;
 import fr.an.llms.huggingface.client.dto.SourceHFModelDTO;
+import fr.an.llms.huggingface.client.dto.SourceHFModelsPageDTO;
 import fr.an.llms.rest.dtos.HFModelDTO;
 import lombok.extern.slf4j.Slf4j;
 import lombok.val;
@@ -15,7 +14,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -73,31 +71,35 @@ public class HuggingFaceSynchronizer {
 
         String url = state.fullScanNextUrl != null
                 ? state.fullScanNextUrl
-                : huggingFaceClient.baseApiModelsUrl + "?limit=1000&expand=createdAt&expand=lastModified"; // &full=true"
+                : huggingFaceClient.baseApiModelsUrl + "?limit=1000&full=true";
 
         log.info("[full] starting/resuming at: " + url);
-        ExecutorService pool = Executors.newFixedThreadPool(concurrency);
+        int pageCount = 0;
+        int rowCount = 0;
+        while (url != null) {
+            long fetchTimestampMs = System.currentTimeMillis();
+            SourceHFModelsPageDTO page = huggingFaceClient.fetchHFModelsPage(url);
+            convertAndStore(page.items(), fetchTimestampMs);
 
-        try {
-            while (url != null) {
-                HFDatedModelsPageDTO page = huggingFaceClient.fetchDatedModelsPage(url);
-                fetchAndStore(page.items, pool);
-
-                // Cursor advanced only after the WHOLE page has been processed successfully
-                state.fullScanNextUrl = page.nextUrl;
-                state.fullScanComplete = (page.nextUrl == null);
-                state.totalModelsSynced = processed.get();
-                state.lastRunErrors = errors.get();
-                state.save(statePath);
-                store.saveIndex(); // same checkpoint granularity as the state: after each successful page
-
-                log.info("[full] page processed, total=" + processed.get() + " errors=" + errors.get() + " next=" + (page.nextUrl != null));
-                url = page.nextUrl;
+            pageCount++;
+            rowCount += page.items().size();
+            if (0 == pageCount%50) {
+                store.saveIndex();
             }
-        } finally {
-            pool.shutdown();
-            pool.awaitTermination(5, TimeUnit.MINUTES);
+
+            state.fullScanNextUrl = page.nextUrl();
+            state.fullScanComplete = (page.nextUrl() == null);
+            state.totalModelsSynced = rowCount;
+            state.lastRunErrors = errors.get();
+            state.save(statePath);
+
+            log.info("[full] " + pageCount + " pages processed, total=" + rowCount
+                    + ((errors.get() != 0)? " errors=" + errors.get() : "")
+                    + ((page.nextUrl() == null)? " (no more page)" : ""));
+            url = page.nextUrl();
         }
+
+        store.saveIndex();
 
         // The full scan becomes the new incremental watermark
         if (state.fullScanComplete) {
@@ -106,7 +108,7 @@ public class HuggingFaceSynchronizer {
             store.compactAll();
         }
 
-        log.info("[full] done. total=" + processed.get()
+        log.info("[full] done. total=" + rowCount
                 + " errors=" + errors.get() + " models_in_store=" + store.size());
     }
 
@@ -130,49 +132,49 @@ public class HuggingFaceSynchronizer {
                 : huggingFaceClient.baseApiModelsUrl + "?sort=lastModified&direction=-1&limit=1000&full=true";
 
         log.info("[incr] watermark=" + threshold + " starting/resuming at: " + url);
-        ExecutorService pool = Executors.newFixedThreadPool(concurrency);
         boolean reachedThreshold = false;
 
-        try {
-            while (url != null && !reachedThreshold) {
-                HFDatedModelsPageDTO page = huggingFaceClient.fetchDatedModelsPage(url);
+        int pageCount = 0;
+        int rowCount = 0;
+        while (url != null && !reachedThreshold) {
+            long fetchTimestampMs = System.currentTimeMillis();
+            SourceHFModelsPageDTO page = huggingFaceClient.fetchHFModelsPage(url);
 
-                List<HFDatedModelDTO> toFetch = new ArrayList<>();
-                for (HFDatedModelDTO m : page.items) {
-                    String lastModifiedStr = m.lastModified;
-                    if (lastModifiedStr == null) continue;
+            List<SourceHFModelDTO> toFetch = new ArrayList<>();
+            for (val m : page.items()) {
+                String lastModifiedStr = m.lastModified;
+                if (lastModifiedStr == null) continue;
 
-                    Instant lastModified = safeParseInstant(lastModifiedStr);
-                    if (lastModified == null) continue;
+                Instant lastModified = safeParseInstant(lastModifiedStr);
+                if (lastModified == null) continue;
 
-                    if (!lastModified.isAfter(threshold)) {
-                        // Sorted desc -> everything else is even older, we can stop right here
-                        reachedThreshold = true;
-                        break;
-                    }
-                    if (lastModified.isAfter(newestSeen)) {
-                        newestSeen = lastModified;
-                    }
-                    toFetch.add(m);
+                if (!lastModified.isAfter(threshold)) {
+                    // Sorted desc -> everything else is even older, we can stop right here
+                    reachedThreshold = true;
+                    break;
                 }
-
-                fetchAndStore(toFetch, pool);
-
-                state.incrementalNextUrl = reachedThreshold ? null : page.nextUrl;
-                state.newestSeenThisRun = newestSeen.toString();
-                state.totalModelsSynced = processed.get();
-                state.lastRunErrors = errors.get();
-                state.save(statePath);
-                store.saveIndex();
-
-                log.info("[incr] page processed, +" + toFetch.size()
-                        + " models, total_run=" + processed.get() + " errors=" + errors.get());
-
-                url = reachedThreshold ? null : page.nextUrl;
+                if (lastModified.isAfter(newestSeen)) {
+                    newestSeen = lastModified;
+                }
+                toFetch.add(m);
             }
-        } finally {
-            pool.shutdown();
-            pool.awaitTermination(5, TimeUnit.MINUTES);
+            rowCount += toFetch.size();
+            pageCount++;
+
+            convertAndStore(toFetch, fetchTimestampMs);
+
+            state.incrementalNextUrl = reachedThreshold ? null : page.nextUrl();
+            state.newestSeenThisRun = newestSeen.toString();
+            state.totalModelsSynced = rowCount;
+            state.lastRunErrors = errors.get();
+            state.save(statePath);
+            store.saveIndex();
+
+            log.info("[incr] " + pageCount + " pages processed, +" + toFetch.size() + " models, total_run=" + rowCount
+                    + ((errors.get() != 0)? " errors=" + errors.get() : "")
+                    + ((page.nextUrl() == null)? " (no more page)" : ""));
+
+            url = reachedThreshold ? null : page.nextUrl();
         }
 
         // Complete run (not interrupted) -> the watermark advances, ready for the next run
@@ -193,53 +195,36 @@ public class HuggingFaceSynchronizer {
         }
     }
 
+    // ================= PROCESS =================
+
+    public void process() throws Exception {
+        log.info("[process] starting...");
+        store.compactAll();
+        log.info("[process] done");
+    }
+
     // ================= SHARED FETCH =================
 
-    private void fetchAndStore(List<HFDatedModelDTO> datedModels, ExecutorService pool) throws InterruptedException {
-        List<Future<?>> futures = new ArrayList<>();
-        for (HFDatedModelDTO datedModel : datedModels) {
-            val partitionYear = HuggingFaceModelRepository.partitionYearOf(datedModel.createdAt);
-            HFModelDTO prev = store.findByPartitionAndId(partitionYear, datedModel.id);
-            if (prev != null && prev.equals(datedModel.lastModified)) {
+    private void convertAndStore(List<SourceHFModelDTO> sourceModels, long fetchTimestampMs) {
+        for (val sourceModel : sourceModels) {
+            val partitionYear = HuggingFaceModelRepository.partitionYearOf(sourceModel.createdAt);
+            HFModelDTO prev = store.findByPartitionAndId(partitionYear, sourceModel.id);
+            if (prev != null && prev.equals(sourceModel.lastModified)) {
                 processed.incrementAndGet();
                 continue;
             }
-            futures.add(pool.submit(() -> {
-                try {
-                    // per-worker throttle
-                    Thread.sleep(delayMsPerRequest);
-                    long fetchMillis = Instant.now().toEpochMilli();
-
-                    SourceHFModelDTO sourceModel = huggingFaceClient.fetchModelInfo(datedModel.id);
-                    if (sourceModel == null) {
-                        store.delete(datedModel.id); // 404 -> deleted/renamed on the hub side (tombstone, purged at next compaction)
-                        log.error("[warn] " + datedModel + ": not found, removed from local store");
-                    } else {
-                        Map<String,Object> extraData = null;
-                        if (prev != null) {
-                            extraData = prev.extra;
-                        }
-                        HFModelDTO hfModelDTO = convertEnrich(sourceModel, fetchMillis, extraData);
-                        store.save(hfModelDTO);
-                    }
-                    processed.incrementAndGet();
-                } catch (Exception e) {
-                    errors.incrementAndGet();
-                    log.error("[error] " + datedModel + ": " + e);
-                }
-            }));
-        }
-        for (Future<?> f : futures) {
-            try {
-                f.get();
-            } catch (ExecutionException e) {
-                errors.incrementAndGet();
+            Map<String,Object> extraData = null;
+            if (prev != null) {
+                extraData = prev.extra;
             }
+            HFModelDTO hfModelDTO = convertEnrich(sourceModel, fetchTimestampMs, extraData);
+            store.save(hfModelDTO);
         }
     }
 
     protected static HFModelDTO convertEnrich(
-            SourceHFModelDTO huggingFaceInfo, long fetchTimestampMs,
+            SourceHFModelDTO huggingFaceInfo,
+            long fetchTimestampMs,
             Map<String,Object> extra) {
         return new HFModelDTO(huggingFaceInfo.id, fetchTimestampMs, huggingFaceInfo, extra);
     }

@@ -8,6 +8,7 @@
  * Do not edit the class manually.
  */
 import { SafetensorsDTO } from './safetensorsDTO';
+import { JsonNode } from './jsonNode';
 import { SiblingDTO } from './siblingDTO';
 import { TransformersInfoDTO } from './transformersInfoDTO';
 import { CardDataDTO } from './cardDataDTO';
@@ -37,6 +38,6 @@ export interface SourceHFModelDTO {
     'private'?: boolean;
     pipeline_tag?: string;
     library_name?: string;
-    'model-index'?: any | null;
+    'model-index'?: JsonNode;
 }
 

@@ -1,12 +1,10 @@
 package fr.an.llms.huggingface.client;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import fr.an.llms.configuration.HuggingFaceProperties;
-import fr.an.llms.huggingface.client.dto.HFDatedModelDTO;
-import fr.an.llms.huggingface.client.dto.HFDatedModelsPageDTO;
 import fr.an.llms.huggingface.client.dto.SourceHFModelDTO;
+import fr.an.llms.huggingface.client.dto.SourceHFModelsPageDTO;
 import lombok.extern.slf4j.Slf4j;
-import lombok.val;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -56,20 +54,44 @@ public class HuggingFaceApiClient {
         return b;
     }
 
-    public HFDatedModelsPageDTO fetchDatedModelsPage(String url) throws IOException, InterruptedException {
+    public SourceHFModelsPageDTO fetchHFModelsPage(String url) throws IOException, InterruptedException {
         HttpResponse<String> resp = sendWithRetry(url);
         String respBody = resp.body();
-        List<HFDatedModelDTO> items = mapper.readerForListOf(HFDatedModelDTO.class).readValue(respBody);
+        List<SourceHFModelDTO> items = mapper.readerForListOf(SourceHFModelDTO.class).readValue(respBody);
         String next = extractHttpHeaderNextLink(resp).orElse(null);
-        return new HFDatedModelsPageDTO(items, next);
+        return new SourceHFModelsPageDTO(items, next);
     }
 
     public SourceHFModelDTO fetchModelInfo(String repoId) throws IOException, InterruptedException {
-        String path = repoId; //.replace("/", "%2F");
-        String url = baseApiModelsUrl + "/" + path + "?blobs=true&files_metadata=true";
+        String url = baseApiModelsUrl + "/" + repoId + "?blobs=true&files_metadata=true";
         try {
             HttpResponse<String> resp = sendWithRetry(url);
             String bodyText = resp.body();
+            return mapper.readValue(bodyText, SourceHFModelDTO.class);
+        } catch (NotFoundException e) {
+            return null;
+        }
+    }
+
+    private static class NotFoundException extends IOException {
+    }
+
+    private HttpResponse<String> sendWithRetry(String url) throws IOException, InterruptedException {
+        int maxAttempts = 5;
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            if (rateLimitRemain.get() <= 10) {
+                long now = System.currentTimeMillis();
+                long waitMs = rateLimitRestTime.get() - now;
+                if (waitMs > 0) {
+                    log.warn("[http] rateLimitRemain=" + rateLimitRemain.get() + " -> wait " + waitMs + "ms");
+                    Thread.sleep(waitMs);
+                    log.info("[http] resuming after wait ... http GET " + url);
+                }
+            }
+
+            HttpResponse<String> resp = client.send(
+                    authed(url).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
 
             resp.headers().firstValue("ratelimit").ifPresent(v -> {
                 // parse '"api";r=791;t=164'
@@ -94,32 +116,6 @@ public class HuggingFaceApiClient {
                     }
                 }
             });
-
-            return mapper.readValue(bodyText, SourceHFModelDTO.class);
-        } catch (NotFoundException e) {
-            return null;
-        }
-    }
-
-    private static class NotFoundException extends IOException {
-    }
-
-    private HttpResponse<String> sendWithRetry(String url) throws IOException, InterruptedException {
-        int maxAttempts = 5;
-        for (int attempt = 0; attempt < maxAttempts; attempt++) {
-            if (rateLimitRemain.get() <= 5) {
-                long now = System.currentTimeMillis();
-                long waitMs = rateLimitRestTime.get() - now;
-                if (waitMs > 0) {
-                    log.warn("[http] rateLimitRemain=" + rateLimitRemain.get() + " -> wait " + waitMs + "ms");
-                    Thread.sleep(waitMs);
-                    log.info("[http] resuming after wait ... http GET " + url);
-                }
-            }
-
-            HttpResponse<String> resp = client.send(
-                    authed(url).GET().build(),
-                    HttpResponse.BodyHandlers.ofString());
 
             int status = resp.statusCode();
             if (status == 200) return resp;
